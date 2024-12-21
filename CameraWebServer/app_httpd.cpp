@@ -130,6 +130,8 @@ FaceRecognition112V1S8 recognizer;
 
 // Define the global recording state
 bool isRecording = false;
+bool reqStartRecording = false;
+bool reqStopRecording = false;
 
 typedef struct {
   size_t size;   //number of values used for filtering
@@ -1203,13 +1205,13 @@ httpd_uri_t uri_recording = {
 
 static esp_err_t start_handler(httpd_req_t *req) {
     // Logic to start recording
-    isRecording = true;
+    reqStartRecording = true;
     return httpd_resp_send(req, "Recording started", HTTPD_RESP_USE_STRLEN);
 }
 
 static esp_err_t stop_handler(httpd_req_t *req) {
     // Logic to stop recording
-    isRecording = false;
+    reqStopRecording = true;
     return httpd_resp_send(req, "Recording stopped", HTTPD_RESP_USE_STRLEN);
 }
 

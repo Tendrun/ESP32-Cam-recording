@@ -45,6 +45,8 @@ const char *ssid = "Tendrun";
 const char *password = "niepodam123#";
 
 extern bool isRecording;
+extern bool reqStartRecording;
+extern bool reqStopRecording;
 
 void startCameraServer();
 void setupLedFlash(int pin);
@@ -185,6 +187,8 @@ void setup() {
 
 
 void recordVideoTask(void *param) {
+    Serial.println("Initializing video recording task...");
+
     File videoFile = SD_MMC.open("/video.mjpeg", FILE_WRITE);
     if (!videoFile) {
         Serial.println("Failed to create video file");
@@ -192,27 +196,52 @@ void recordVideoTask(void *param) {
         return;
     }
 
+    Serial.println("Ready for recording...");
+    camera_fb_t *fb;
+
     while (true) {
         if (isRecording) {
-            camera_fb_t *fb = esp_camera_fb_get();
-            if (!fb) {
-                Serial.println("Camera capture failed");
-                continue;
+            // Check if a stop request is made
+            if (reqStopRecording) {
+                reqStopRecording = false;
+                isRecording = false; // Stop recording
+                videoFile.close();   // Close the file
+                Serial.println("Video recording stopped and file saved.");
+            } else {
+                // Capture a frame
+                if (fb) {
+                    // capture camera frame
+                    fb = esp_camera_fb_get();
+                    videoFile.write(fb->buf, fb->len); // Write frame data to file
+                    esp_camera_fb_return(fb);         // Return the frame buffer
+                    Serial.println("Recording...");
+                    delay(100);
+
+                } else {
+                    Serial.println("Failed to capture frame");
+                }
             }
-
-            // Write the frame data directly to the video file
-            videoFile.write(fb->buf, fb->len);
-            esp_camera_fb_return(fb);
-
-            delay(100); // Adjust frame interval for desired frame rate
         } else {
-            // Stop recording and delete the task if recording stops
-            videoFile.close();
-            Serial.println("Video recording stopped and file saved.");
-            vTaskDelete(NULL); // Safely terminate the task
+            // Check if a start request is made
+            if (reqStartRecording) {
+                reqStartRecording = false;
+                fb = esp_camera_fb_get();
+                if (fb) {
+                    isRecording = true; // Start recording
+                    esp_camera_fb_return(fb); // Return the frame buffer (not used here)
+                    Serial.println("Recording started...");
+                } else {
+                    Serial.println("Failed to start recording - no frame available");
+                }
+            } else {
+                Serial.println("Idle...");
+                delay(1000);
+            }
         }
+        delay(100); // Small delay to prevent CPU overload
     }
 }
+
 
 
 
