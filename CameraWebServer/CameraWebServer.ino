@@ -1,39 +1,23 @@
 #include "esp_camera.h"
+#include "SD_MMC.h"
 #include <WiFi.h>
+#include <time.h> // For time functionality
 
-//
-// WARNING!!! PSRAM IC required for UXGA resolution and high JPEG quality
-//            Ensure ESP32 Wrover Module or other board with PSRAM is selected
-//            Partial images will be transmitted if image exceeds buffer size
-//
-//            You must select partition scheme from the board menu that has at least 3MB APP space.
-//            Face Recognition is DISABLED for ESP32 and ESP32-S2, because it takes up from 15
-//            seconds to process single frame. Face Detection is ENABLED if PSRAM is enabled as well
 
-// ===================
 // Select camera model
-// ===================
 //#define CAMERA_MODEL_WROVER_KIT // Has PSRAM
-//#define CAMERA_MODEL_ESP_EYE  // Has PSRAM
-//#define CAMERA_MODEL_ESP32S3_EYE // Has PSRAM
+//#define CAMERA_MODEL_ESP_EYE // Has PSRAM
 //#define CAMERA_MODEL_M5STACK_PSRAM // Has PSRAM
 //#define CAMERA_MODEL_M5STACK_V2_PSRAM // M5Camera version B Has PSRAM
 //#define CAMERA_MODEL_M5STACK_WIDE // Has PSRAM
 //#define CAMERA_MODEL_M5STACK_ESP32CAM // No PSRAM
-//#define CAMERA_MODEL_M5STACK_UNITCAM // No PSRAM
-//#define CAMERA_MODEL_M5STACK_CAMS3_UNIT  // Has PSRAM
 #define CAMERA_MODEL_AI_THINKER // Has PSRAM
 //#define CAMERA_MODEL_TTGO_T_JOURNAL // No PSRAM
-//#define CAMERA_MODEL_XIAO_ESP32S3 // Has PSRAM
-// ** Espressif Internal Boards **
-//#define CAMERA_MODEL_ESP32_CAM_BOARD
-//#define CAMERA_MODEL_ESP32S2_CAM_BOARD
-//#define CAMERA_MODEL_ESP32S3_CAM_LCD
-//#define CAMERA_MODEL_DFRobot_FireBeetle2_ESP32S3 // Has PSRAM
-//#define CAMERA_MODEL_DFRobot_Romeo_ESP32S3 // Has PSRAM
+
 #include "camera_pins.h"
-#include "SD_MMC.h"
-#include "time.h"
+
+const char * photoPrefix = "/photo_";
+int photoNumber = 0;
 
 
 
@@ -56,7 +40,6 @@ void setup() {
   Serial.setDebugOutput(true);
   Serial.println();
 
-
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -72,63 +55,35 @@ void setup() {
   config.pin_pclk = PCLK_GPIO_NUM;
   config.pin_vsync = VSYNC_GPIO_NUM;
   config.pin_href = HREF_GPIO_NUM;
-  config.pin_sccb_sda = SIOD_GPIO_NUM;
-  config.pin_sccb_scl = SIOC_GPIO_NUM;
+  config.pin_sscb_sda = SIOD_GPIO_NUM;
+  config.pin_sscb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
-  config.frame_size = FRAMESIZE_UXGA;
-  config.pixel_format = PIXFORMAT_JPEG;  // for streaming
-  //config.pixel_format = PIXFORMAT_RGB565; // for face detection/recognition
-  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
-  config.fb_location = CAMERA_FB_IN_PSRAM;
-  config.jpeg_quality = 12;
-  config.fb_count = 1;
+  config.pixel_format = PIXFORMAT_JPEG;
 
-
-
-   if (!SD_MMC.begin()) {
-        Serial.println("SD card initialization failed");
-        return;
-    }
 
   isRecording = false;
 
-  xTaskCreate(recordVideoTask,     // Task function
-                  "RecordVideoTask",   // Task name (for debugging)
-                  8192,                // Stack size (adjust if needed)
-                  NULL,                // Parameters to pass
-                  1,                   // Task priority
-                  NULL); 
 
-
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov"); // Sync with NTP servers
-    Serial.print("Waiting for time");
-    while (!time(nullptr)) {
-        Serial.print(".");
-        delay(1000);
-    }
-    Serial.println("\nTime synchronized.");
-
-  // if PSRAM IC present, init with UXGA resolution and higher JPEG quality
-  //                      for larger pre-allocated frame buffer.
-  if (config.pixel_format == PIXFORMAT_JPEG) {
-    if (psramFound()) {
-      config.jpeg_quality = 10;
-      config.fb_count = 2;
-      config.grab_mode = CAMERA_GRAB_LATEST;
-    } else {
-      // Limit the frame size when PSRAM is not available
-      config.frame_size = FRAMESIZE_SVGA;
-      config.fb_location = CAMERA_FB_IN_DRAM;
-    }
-  } else {
-    // Best option for face detection/recognition
-    config.frame_size = FRAMESIZE_240X240;
-#if CONFIG_IDF_TARGET_ESP32S3
+if (psramFound()) {
+    config.frame_size = FRAMESIZE_UXGA;
+    config.jpeg_quality = 10;
     config.fb_count = 2;
-#endif
+
+  } else {
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 12;
+    config.fb_count = 1;
   }
+
+
+
+  #if defined(CAMERA_MODEL_ESP_EYE)
+  pinMode(13, INPUT_PULLUP);
+  pinMode(14, INPUT_PULLUP);
+  #endif
+
 
 #if defined(CAMERA_MODEL_ESP_EYE)
   pinMode(13, INPUT_PULLUP);
@@ -149,24 +104,23 @@ void setup() {
     s->set_brightness(s, 1);   // up the brightness just a bit
     s->set_saturation(s, -2);  // lower the saturation
   }
-  // drop down frame size for higher initial frame rate
-  if (config.pixel_format == PIXFORMAT_JPEG) {
-    s->set_framesize(s, FRAMESIZE_QVGA);
+
+  s->set_framesize(s, FRAMESIZE_QVGA);
+
+  #if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
+  s -> set_vflip(s, 1);
+  s -> set_hmirror(s, 1);
+  #endif
+
+
+ Serial.println("Initialising SD card");
+
+  if (!SD_MMC.begin()) {
+    Serial.println("Failed to initialise SD card!");
+    return;
   }
 
-#if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
-  s->set_vflip(s, 1);
-  s->set_hmirror(s, 1);
-#endif
 
-#if defined(CAMERA_MODEL_ESP32S3_EYE)
-  s->set_vflip(s, 1);
-#endif
-
-// Setup LED FLash if LED pin is defined in camera_pins.h
-#if defined(LED_GPIO_NUM)
-  setupLedFlash(LED_GPIO_NUM);
-#endif
 
   WiFi.begin(ssid, password);
   WiFi.setSleep(false);
@@ -183,21 +137,26 @@ void setup() {
   Serial.print("Camera Ready! Use 'http://");
   Serial.print(WiFi.localIP());
   Serial.println("' to connect");
+
+
+/*
+    xTaskCreate(recordVideoTask,     // Task function
+                  "RecordVideoTask",   // Task name (for debugging)
+                  8192,                // Stack size (adjust if needed)
+                  NULL,                // Parameters to pass
+                  1,                   // Task priority
+                  NULL); */
 }
 
-
+/*
 void recordVideoTask(void *param) {
     Serial.println("Initializing video recording task...");
 
-    File videoFile = SD_MMC.open("/video.mjpeg", FILE_WRITE);
-    if (!videoFile) {
-        Serial.println("Failed to create video file");
-        vTaskDelete(NULL); // End the task safely if file creation fails
-        return;
-    }
-
     Serial.println("Ready for recording...");
-    camera_fb_t *fb;
+    camera_fb_t *fb = NULL;
+
+    reqStopRecording = false;
+    isRecording = false;
 
     while (true) {
         if (isRecording) {
@@ -205,17 +164,17 @@ void recordVideoTask(void *param) {
             if (reqStopRecording) {
                 reqStopRecording = false;
                 isRecording = false; // Stop recording
-                videoFile.close();   // Close the file
-                Serial.println("Video recording stopped and file saved.");
+                Serial.println("Video recording stopped");
             } else {
                 // Capture a frame
+                fb = esp_camera_fb_get();
                 if (fb) {
                     // capture camera frame
                     fb = esp_camera_fb_get();
-                    videoFile.write(fb->buf, fb->len); // Write frame data to file
+                    writeRecordingFile(SD_MMC, "/video.mjpeg", fb->buf, fb->len);
                     esp_camera_fb_return(fb);         // Return the frame buffer
                     Serial.println("Recording...");
-                    delay(100);
+                    delay(1000);
 
                 } else {
                     Serial.println("Failed to capture frame");
@@ -241,11 +200,114 @@ void recordVideoTask(void *param) {
         delay(100); // Small delay to prevent CPU overload
     }
 }
+*/
+void CreateFile() {
+    // Open the file to check if it exists
+    File file = SD_MMC.open("/data.txt");
+    if (!file) {
+        Serial.println("File doesn't exist");
+        Serial.println("Creating file...");
+        writeFile(SD_MMC, "/data.txt", "Epoch Time, Temperature, Humidity, Pressure \r\n");
+    } else {
+        Serial.println("File already exists");
+    }
+    file.close();
+}
 
 
 
+void writeRecordingFile(fs::FS &fs, const char *path, const uint8_t *data, size_t length) {
+    Serial.printf("Writing file: %s\n", path);
+    Serial.println();
+
+    time_t now = time(nullptr); // Get the current time
+    struct tm *timeinfo = localtime(&now); // Convert to local time
+
+    // Format folder name as "YYYY-MM-DD_HH-MM-SS"
+    char FileName[64];
+    strftime(FileName, sizeof(FileName), "%Y-%m-%d_%H-%M-%S", timeinfo);
+
+    // Create the final file name as a const char
+    static char FinalfileName[128]; // Ensure enough space for concatenation
+    snprintf(FinalfileName, sizeof(FinalfileName), "%s%s.jpg", path, FileName);
+
+    Serial.printf("Writing file: %s\n", FinalfileName);
+
+    File file = fs.open(FinalfileName, FILE_WRITE);
+    // Write the binary data to the file
+    if (file.write(data, length) == length) {
+        Serial.println("Frame written successfully");
+    } else {
+        Serial.println("Write failed");
+    }
+
+    file.close();
+}
+
+
+void writeFile(fs::FS &fs, const char *path, const char *message) {
+    Serial.printf("Writing file: %s\n", path);
+
+    // Open file for writing
+    File file = fs.open(path, FILE_WRITE);
+    if (!file) {
+        Serial.println("Failed to open file for writing");
+        return;
+    }
+
+    // Write the message to the file
+    if (file.print(message)) {
+        Serial.println("File written successfully");
+    } else {
+        Serial.println("Write failed");
+    }
+
+    file.close();
+}
+
+  camera_fb_t *fb = NULL;
 
 void loop() {
-  // Do nothing. Everything is done in another task by the web server
-  delay(10000);
+{
+        if (isRecording) {
+            // Check if a stop request is made
+            if (reqStopRecording) {
+                reqStopRecording = false;
+                isRecording = false; // Stop recording
+                Serial.println("Video recording stopped");
+            } else {
+                // Capture a frame
+                fb = esp_camera_fb_get();
+                if (fb) {
+                    // capture camera frame
+                    //fb = esp_camera_fb_get();
+                    writeRecordingFile(SD_MMC, "/video", fb->buf, fb->len);
+                    esp_camera_fb_return(fb);         // Return the frame buffer
+                    Serial.println("Recording...");
+                    delay(1000);
+
+                } else {
+                    Serial.println("Failed to capture frame");
+                }
+            }
+        } else {
+            // Check if a start request is made
+            if (reqStartRecording) {
+                reqStartRecording = false;
+                fb = esp_camera_fb_get();
+                if (fb) {
+                    isRecording = true; // Start recording
+                    esp_camera_fb_return(fb); // Return the frame buffer (not used here)
+                    Serial.println("Recording started...");
+                } else {
+                    Serial.println("Failed to start recording - no frame available");
+                }
+            } else {
+                Serial.println("Idle...");
+                delay(1000);
+            }
+        }
+        delay(100); // Small delay to prevent CPU overload
+    }
+  delay(100);
 }

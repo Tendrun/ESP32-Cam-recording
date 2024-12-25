@@ -1374,6 +1374,7 @@ void startCameraServer() {
 #endif
   log_i("Starting web server on port: '%d'", config.server_port);
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
+    
     httpd_register_uri_handler(camera_httpd, &index_uri);
     httpd_register_uri_handler(camera_httpd, &cmd_uri);
     httpd_register_uri_handler(camera_httpd, &status_uri);
@@ -1385,7 +1386,7 @@ void startCameraServer() {
     httpd_register_uri_handler(camera_httpd, &greg_uri);
     httpd_register_uri_handler(camera_httpd, &pll_uri);
     httpd_register_uri_handler(camera_httpd, &win_uri);
-
+    
 
     httpd_register_uri_handler(camera_httpd, &uri_recording);
     httpd_uri_t uri_start = {"/start", HTTP_GET, start_handler, NULL};
